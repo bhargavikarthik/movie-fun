@@ -1,32 +1,41 @@
 package org.superbiz.moviefun.albums;
 
 import org.apache.tika.Tika;
+import org.apache.tika.config.TikaConfig;
+import org.apache.tika.detect.Detector;
+import org.apache.tika.io.IOUtils;
+import org.apache.tika.metadata.Metadata;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.superbiz.moviefun.blobstore.Blob;
+import org.superbiz.moviefun.blobstore.BlobStore;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Map;
+import java.util.Optional;
 
 import static java.lang.ClassLoader.getSystemResource;
 import static java.lang.String.format;
-import static java.nio.file.Files.readAllBytes;
 
 @Controller
 @RequestMapping("/albums")
 public class AlbumsController {
 
+    private final BlobStore blobStore;
     private final AlbumsBean albumsBean;
 
-    public AlbumsController(AlbumsBean albumsBean) {
+    public AlbumsController(BlobStore blobStore, AlbumsBean albumsBean) {
+        this.blobStore = blobStore;
         this.albumsBean = albumsBean;
     }
 
@@ -45,18 +54,38 @@ public class AlbumsController {
 
     @PostMapping("/{albumId}/cover")
     public String uploadCover(@PathVariable long albumId, @RequestParam("file") MultipartFile uploadedFile) throws IOException {
-        saveUploadToFile(uploadedFile, getCoverFile(albumId));
 
+        blobStore.put(new Blob(albumId+"", uploadedFile.getInputStream(), uploadedFile.getContentType()));
         return format("redirect:/albums/%d", albumId);
     }
 
     @GetMapping("/{albumId}/cover")
     public HttpEntity<byte[]> getCover(@PathVariable long albumId) throws IOException, URISyntaxException {
-        Path coverFilePath = getExistingCoverPath(albumId);
-        byte[] imageBytes = readAllBytes(coverFilePath);
-        HttpHeaders headers = createImageHttpHeaders(coverFilePath, imageBytes);
 
-        return new HttpEntity<>(imageBytes, headers);
+        Optional<Blob> maybeBlob = blobStore.get(""+albumId);
+        if (maybeBlob.isPresent()) {
+            Blob blob = maybeBlob.get();
+            byte[] b = IOUtils.toByteArray(blob.inputStream);
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.parseMediaType(blob.contentType));
+            headers.setContentLength(b.length);
+
+            return new HttpEntity<>(b, headers);
+
+        } else {
+
+            ClassLoader loader = getClass().getClassLoader();
+            InputStream stream = loader.getResourceAsStream("default-cover.jpg");
+
+            byte[] b = IOUtils.toByteArray(stream);
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.IMAGE_JPEG);
+            headers.setContentLength(b.length);
+
+            return new HttpEntity<>(b, headers);
+        }
+
     }
 
 
@@ -95,5 +124,23 @@ public class AlbumsController {
         }
 
         return coverFilePath;
+    }
+
+    private String getContentType(MultipartFile multipartFile,String fileName){
+
+        try {
+            TikaConfig config = TikaConfig.getDefaultConfig();
+            Detector detector = config.getDetector();
+            Metadata md = new Metadata();
+            md.set(Metadata.RESOURCE_NAME_KEY, fileName);
+            String contentType = detector.detect(multipartFile.getInputStream(),md).toString();
+
+            return contentType;
+        }catch (Exception e){
+            e.printStackTrace();
+        }
+        return  null;
+
+
     }
 }
